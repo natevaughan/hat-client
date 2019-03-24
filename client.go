@@ -1,24 +1,39 @@
 package main
 
 import (
-	"net/http"
-	"io/ioutil"
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
 	"os"
 	"strconv"
-	"fmt"
-	"bytes"
+	"strings"
 )
 
 type ChatClient struct {
-	baseUrl string
-	token string
-	client http.Client
+	baseUrl    string
+	token      string
+	client     http.Client
+	reader     bufio.Reader
+	outboundIP net.IP
+}
+
+const PUBLIC_CHANNEL = "PUBLIC_CHANNEL"
+const PRIVATE_CHANNEL = "PRIVATE_CHANNEL"
+const CONVERSATION = "CONVERSATION"
+
+func (cc *ChatClient) getInput() string {
+	text, _ := cc.reader.ReadString('\n')
+	return strings.Join(strings.Fields(text), "")
 }
 
 func (cc *ChatClient) identity() User {
 
-	body, err := cc.get("user")
+	body, err := cc.Get("user")
 
 	if err != nil {
 		printErr(err.Error())
@@ -36,16 +51,16 @@ func (cc *ChatClient) identity() User {
 	return identity
 }
 
-func (cc *ChatClient) listHats() []Hat {
+func (cc *ChatClient) listChats(space Space) []Chat {
 
-	body, err := cc.get("hat")
+	body, err := cc.Get("space/" + space.Id + "/chat")
 
 	if err != nil {
 		printErr(err.Error())
 	}
 	println(string(body))
 
-	var m []Hat
+	var m []Chat
 
 	if len(body) > 0 {
 		err = json.Unmarshal(body, &m)
@@ -57,10 +72,75 @@ func (cc *ChatClient) listHats() []Hat {
 	return m
 }
 
-func (cc *ChatClient) previous(hatId int64, count int) []Message {
+func (cc *ChatClient) createChat(space Space, name string, chatType int, participants []string) Chat {
 
-	path := "hat/" + fmt.Sprintf("%v", hatId) + "/previous/" + strconv.Itoa(count)
-	body, err := cc.get(path)
+	var t string
+	switch chatType {
+	case 1:
+		t = PUBLIC_CHANNEL
+		break
+	case 2:
+		t = PRIVATE_CHANNEL
+		break
+	default:
+		t = CONVERSATION
+		break
+	}
+
+	b, err := json.Marshal(CreateChatRequest{name, t, participants})
+
+	if err != nil {
+		printErr(err.Error())
+	}
+
+	println(string(b))
+
+	body, err := cc.Post("space/"+space.Id+"/chat", b)
+
+	if err != nil {
+		printErr(err.Error())
+	}
+
+	println(string(body))
+
+	var m Chat
+
+	if len(body) > 0 {
+		err = json.Unmarshal(body, &m)
+		if err != nil {
+			printErr(err.Error())
+		}
+	}
+
+	return m
+}
+
+func (cc *ChatClient) listSpaces() []Space {
+
+	body, err := cc.Get("space")
+
+	if err != nil {
+		printErr(err.Error())
+	}
+	println(string(body))
+
+	var s []Space
+
+	if len(body) > 0 {
+		err = json.Unmarshal(body, &s)
+		if err != nil {
+			printErr(err.Error())
+			return []Space{}
+		}
+	}
+
+	return s
+}
+
+func (cc *ChatClient) previous(chatId string, count int) []Message {
+
+	path := "hat/" + fmt.Sprintf("%v", chatId) + "/previous/" + strconv.Itoa(count)
+	body, err := cc.Get(path)
 
 	if err != nil {
 		printErr(err.Error())
@@ -77,12 +157,11 @@ func (cc *ChatClient) previous(hatId int64, count int) []Message {
 	return m
 }
 
+func (cc *ChatClient) since(space Space, chatId string, unix int64) []Message {
 
-func (cc *ChatClient) since(hatId int64, unix int64) []Message {
+	path := "space/" + space.Id + "/chat/" + chatId + "/since/" + strconv.FormatInt(unix, 10)
 
-	path := "hat/" + fmt.Sprintf("%v", hatId) + "/since/" + strconv.FormatInt(unix, 10)
-
-	body, err := cc.get(path)
+	body, err := cc.Get(path)
 
 	if err != nil {
 		printErr(err.Error())
@@ -100,10 +179,10 @@ func (cc *ChatClient) since(hatId int64, unix int64) []Message {
 	return m
 }
 
-func (cc *ChatClient) sendMessage(hatId int64, message string) []byte {
-	path := "hat/" + fmt.Sprintf("%v", hatId)
+func (cc *ChatClient) sendMessage(chatId string, message string) []byte {
+	path := "chat/" + chatId
 
-	msg := MessageReq{0, message}
+	msg := MessageReq{"", message}
 
 	postBody, err := json.Marshal(msg)
 
@@ -111,7 +190,7 @@ func (cc *ChatClient) sendMessage(hatId int64, message string) []byte {
 		printErr(err.Error())
 	}
 
-	body, err := cc.post(path, postBody)
+	body, err := cc.Post(path, postBody)
 
 	if err != nil {
 		printErr(err.Error())
@@ -120,9 +199,32 @@ func (cc *ChatClient) sendMessage(hatId int64, message string) []byte {
 	return body
 }
 
-func (cc *ChatClient) get(path string) ([]byte, error) {
+func (cc *ChatClient) getUsersForSpace(space Space) ([]Participant, error) {
+	var p []Participant
+	path := "user/space/" + space.Id
 
-	req, err := http.NewRequest("GET", cc.baseUrl + path, nil)
+	body, err := cc.Get(path)
+
+	if err != nil {
+		return p, err
+	}
+
+	err = json.Unmarshal(body, &p)
+
+	if err != nil {
+		return p, err
+	}
+
+	return p, nil
+}
+
+func (cc *ChatClient) Get(path string) ([]byte, error) {
+
+	if cc.outboundIP == nil {
+		cc.outboundIP = cc.getOutboundIP()
+	}
+
+	req, err := http.NewRequest("GET", cc.baseUrl+path, nil)
 
 	if err != nil {
 		return nil, err
@@ -130,6 +232,8 @@ func (cc *ChatClient) get(path string) ([]byte, error) {
 
 	req.Header.Add("api-token", cc.token)
 	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("X-Forwarded-For", cc.outboundIP.String())
 
 	resp, err := cc.client.Do(req)
 	if err != nil {
@@ -144,10 +248,13 @@ func (cc *ChatClient) get(path string) ([]byte, error) {
 	return body, nil
 }
 
+func (cc *ChatClient) Post(path string, postBody []byte) ([]byte, error) {
 
-func (cc *ChatClient) post(path string, postBody []byte) ([]byte, error) {
+	if cc.outboundIP == nil {
+		cc.outboundIP = cc.getOutboundIP()
+	}
 
-	req, err := http.NewRequest("POST", cc.baseUrl + path, bytes.NewBuffer(postBody))
+	req, err := http.NewRequest("POST", cc.baseUrl+path, bytes.NewBuffer(postBody))
 
 	if err != nil {
 		return nil, err
@@ -155,6 +262,8 @@ func (cc *ChatClient) post(path string, postBody []byte) ([]byte, error) {
 
 	req.Header.Add("api-token", cc.token)
 	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("X-Forwarded-For", cc.outboundIP.String())
 
 	resp, err := cc.client.Do(req)
 	if err != nil {
@@ -170,30 +279,57 @@ func (cc *ChatClient) post(path string, postBody []byte) ([]byte, error) {
 	return respBody, nil
 }
 
+func (cc *ChatClient) getOutboundIP() net.IP {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP
+}
 
 type Message struct {
-	Id int64
-	Timestamp int64
-	Text string
-	Author User
+	Id         string
+	Timestamp  int64
+	Text       string
+	Author     User
 	LastEdited int64
 }
 
 type MessageReq struct {
-	Id int64
-	Text string
+	Id   string `json:"id"`
+	Text string `json:"text"`
+}
+
+type Participant struct {
+	User User
+	Role string
 }
 
 type User struct {
-	Id int64
+	Id   string
 	Name string
 }
 
-
-type Hat struct {
-	Id int64
-	Name string
-	Creator User
+type Chat struct {
+	Id           string
+	Name         string
+	Type         string
+	Space        Space
+	Creator      User
 	Participants []User
 }
 
+type Space struct {
+	Id   string
+	Name string
+}
+
+type CreateChatRequest struct {
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Participants []string `json:"participants"`
+}
