@@ -147,14 +147,8 @@ func main() {
 			println(err.Error())
 			return
 		}
-		space = spaces[idx]
 
-		var inputChatId int64
-		if _, err := fmt.Sscan(text, &inputChatId); err == nil {
-			fmt.Printf("i=%d, type: %T\n", inputChatId, inputChatId)
-		}
-
-		chatId = chats[inputChatId-1].Id
+		chatId = chats[idx - 1].Id
 	} else {
 		println("There are no chats available. Why not start one?")
 		chatType, err := ui.AskWithOptions("What kind of chat would you like to start?", []string{"public chat channel", "private chat channel", "private message conversation"}, 2)
@@ -193,7 +187,7 @@ func main() {
 		}
 	}
 
-	m := client.previous(chatId, 20)
+	m := client.previous(space, chatId, 20)
 
 	printMessages(m, identity, cm)
 
@@ -202,12 +196,12 @@ func main() {
 	go poll(space, chatId, cm, &client, &w, identity)
 
 	for w.running {
-		text, _ = reader.ReadString('\n')
+		text = client.getInput()
 
 		if text == ":q" {
 			w.running = false
 		} else {
-			client.sendMessage(chatId, text)
+			client.sendMessage(space, chatId, text)
 		}
 	}
 }

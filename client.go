@@ -4,14 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 )
 
 type ChatClient struct {
@@ -28,7 +26,7 @@ const CONVERSATION = "CONVERSATION"
 
 func (cc *ChatClient) getInput() string {
 	text, _ := cc.reader.ReadString('\n')
-	return strings.Join(strings.Fields(text), "")
+	return text[:len(text) - 1]
 }
 
 func (cc *ChatClient) identity() User {
@@ -58,7 +56,6 @@ func (cc *ChatClient) listChats(space Space) []Chat {
 	if err != nil {
 		printErr(err.Error())
 	}
-	println(string(body))
 
 	var m []Chat
 
@@ -93,15 +90,11 @@ func (cc *ChatClient) createChat(space Space, name string, chatType int, partici
 		printErr(err.Error())
 	}
 
-	println(string(b))
-
 	body, err := cc.Post("space/"+space.Id+"/chat", b)
 
 	if err != nil {
 		printErr(err.Error())
 	}
-
-	println(string(body))
 
 	var m Chat
 
@@ -122,7 +115,6 @@ func (cc *ChatClient) listSpaces() []Space {
 	if err != nil {
 		printErr(err.Error())
 	}
-	println(string(body))
 
 	var s []Space
 
@@ -137,9 +129,9 @@ func (cc *ChatClient) listSpaces() []Space {
 	return s
 }
 
-func (cc *ChatClient) previous(chatId string, count int) []Message {
+func (cc *ChatClient) previous(space Space, chatId string, count int) []Message {
 
-	path := "hat/" + fmt.Sprintf("%v", chatId) + "/previous/" + strconv.Itoa(count)
+	path := "space/" + space.Id + "/chat/" + chatId + "/message/previous/" + strconv.Itoa(count)
 	body, err := cc.Get(path)
 
 	if err != nil {
@@ -159,7 +151,7 @@ func (cc *ChatClient) previous(chatId string, count int) []Message {
 
 func (cc *ChatClient) since(space Space, chatId string, unix int64) []Message {
 
-	path := "space/" + space.Id + "/chat/" + chatId + "/since/" + strconv.FormatInt(unix, 10)
+	path := "space/" + space.Id + "/chat/" + chatId + "/message/since/" + strconv.FormatInt(unix, 10)
 
 	body, err := cc.Get(path)
 
@@ -179,10 +171,10 @@ func (cc *ChatClient) since(space Space, chatId string, unix int64) []Message {
 	return m
 }
 
-func (cc *ChatClient) sendMessage(chatId string, message string) []byte {
-	path := "chat/" + chatId
+func (cc *ChatClient) sendMessage(space Space, chatId string, message string) []byte {
+	path := "space/" + space.Id + "/chat/" + chatId + "/message"
 
-	msg := MessageReq{"", message}
+	msg := MessageReq{message}
 
 	postBody, err := json.Marshal(msg)
 
@@ -245,6 +237,7 @@ func (cc *ChatClient) Get(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return body, nil
 }
 
@@ -293,14 +286,13 @@ func (cc *ChatClient) getOutboundIP() net.IP {
 
 type Message struct {
 	Id         string
-	Timestamp  int64
+	DateCreated  int64
 	Text       string
 	Author     User
 	LastEdited int64
 }
 
 type MessageReq struct {
-	Id   string `json:"id"`
 	Text string `json:"text"`
 }
 
